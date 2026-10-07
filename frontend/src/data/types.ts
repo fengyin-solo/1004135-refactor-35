@@ -3,9 +3,10 @@
 export type EntryRow = {
   id: number
   status: string
-  pending: boolean
-  abnormal: boolean
-  [field: string]: string | number | boolean
+  // 历史旧航班可能没有这两个标记，读取时由数据层按统一判定补默认
+  pending?: boolean
+  abnormal?: boolean
+  [field: string]: string | number | boolean | undefined
 }
 
 export type ModuleMeta = {

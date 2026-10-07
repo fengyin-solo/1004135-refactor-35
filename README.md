@@ -68,4 +68,7 @@ npm run build
 - 字段、状态、动作与流转目标集中在 `frontend/src/data/modules.ts`；示例数据在
   `frontend/src/data/seed.ts`。
 - 状态流转只允许在 `local-service.ts` 里改，页面组件不做业务判断。
+- 航班保障的节点判定（航班号、计划到港、实际到港、保障节点 → 保障状态）集中在
+  `frontend/src/data/flight-ops.ts`，列表、详情、动作流转与重试拉取共用；过站监控清单的
+  待补节点由 `syncTurnaroundPending()` 按「关联航班 ↔ 航班号」同步。
 - 想回到初始数据：清掉浏览器里 `airport-ground-handling:entries` 这一项，或调用 `resetModule(模块)`。

@@ -37,15 +37,22 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>待补节点</th>
           <th>当前状态</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
-          <td>{{ row.status }}</td>
+          <td v-for="column in columns" :key="column">{{ displayCell(row, column) }}</td>
+          <td>{{ missingText(row) }}</td>
+          <td>
+            {{ assessFlight(row).effectiveStatus }}
+            <span v-if="assessFlight(row).interrupted" class="tag tag-warn">中断</span>
+            <span v-if="assessFlight(row).manualDelay" class="tag tag-delay">人工延误</span>
+          </td>
           <td class="row-actions">
+            <button class="link" type="button" @click="openDetail(row)">详情</button>
             <button
               v-for="action in actions"
               :key="action"
@@ -58,15 +65,61 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无航班保障数据，可先登记航班保障</td>
+          <td :colspan="columns.length + 3" class="empty-state">
+            <template v-if="loadFailed">
+              暂无航班保障数据：{{ errorMessage }}
+              <button class="link" type="button" @click="reload">重试拉取</button>
+            </template>
+            <template v-else>暂无航班保障数据，可先登记航班保障</template>
+          </td>
         </tr>
       </tbody>
     </table>
 
     <footer class="page-foot">
       <span>共 {{ total }} 条航班保障记录</span>
-      <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+      <span v-if="!loadFailed && errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
+
+    <div v-if="detailVisible" class="drawer-mask" @click.self="closeDetail">
+      <aside class="drawer">
+        <header class="drawer-head">
+          <h3>航班保障详情</h3>
+          <button class="btn ghost" type="button" @click="closeDetail">关闭</button>
+        </header>
+        <p v-if="detailError" class="error-text">
+          {{ detailError }}
+          <button class="link" type="button" @click="reloadDetail">重试拉取</button>
+        </p>
+        <template v-else-if="detailRow && detailAssessment">
+          <dl class="detail-grid">
+            <template v-for="column in columns" :key="column">
+              <dt>{{ column }}</dt>
+              <dd>{{ displayCell(detailRow, column) }}</dd>
+            </template>
+            <dt>当前状态</dt>
+            <dd>{{ detailAssessment.effectiveStatus }}</dd>
+            <dt>待补节点</dt>
+            <dd>{{ detailAssessment.missing.join('、') || '无' }}</dd>
+            <template v-if="detailAssessment.interrupted">
+              <dt>中断原因</dt>
+              <dd>{{ detailAssessment.cause }}</dd>
+            </template>
+          </dl>
+          <div class="drawer-actions">
+            <button
+              v-if="detailAssessment.interrupted"
+              class="btn primary"
+              type="button"
+              @click="retryDetail"
+            >
+              重新拉取
+            </button>
+          </div>
+          <p v-if="detailMessage" class="retry-message">{{ detailMessage }}</p>
+        </template>
+      </aside>
+    </div>
   </section>
 </template>
 
@@ -74,9 +127,12 @@
 import { computed, onMounted, ref } from 'vue'
 
 import {
+  assessFlight,
   downloadEntries,
-  listEntries,
+  getFlightEntry,
+  listFlightEntries,
   moduleMeta,
+  retryFlightFetch,
   runAction as applyAction,
 } from '@/api/local-service'
 import type { EntryRow } from '@/data/types'
@@ -90,14 +146,33 @@ const stats = [{"label": "待保障航班", "value": 0}, {"label": "保障中航
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const loadFailed = ref(false)
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+const detailVisible = ref(false)
+const detailRow = ref<EntryRow | null>(null)
+const detailId = ref<number | null>(null)
+const detailError = ref('')
+const detailMessage = ref('')
+const detailAssessment = computed(() => (detailRow.value ? assessFlight(detailRow.value) : null))
+
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
-    count: rows.value.filter((row) => String(row.status) === status).length,
+    count: rows.value.filter((row) => assessFlight(row).effectiveStatus === status).length,
   })),
 )
+
+function displayCell(row: EntryRow, column: string) {
+  const value = row[column]
+  return value === undefined || value === null || String(value).trim() === '' ? '—' : value
+}
+
+function missingText(row: EntryRow) {
+  const missing = assessFlight(row).missing
+  return missing.length ? missing.join('、') : '无'
+}
 
 function resetFilters() {
   filters.value = {}
@@ -124,13 +199,58 @@ function runAction(action: string, row: EntryRow) {
 
 function reload() {
   errorMessage.value = ''
+  loadFailed.value = false
   try {
-    const payload = listEntries(meta.key, filters.value)
+    const payload = listFlightEntries(filters.value)
     rows.value = payload.items
     total.value = payload.total
   } catch (error) {
+    rows.value = []
+    total.value = 0
+    loadFailed.value = true
     errorMessage.value = error instanceof Error ? error.message : '航班保障列表读取失败'
   }
+}
+
+function openDetail(row: EntryRow) {
+  detailId.value = Number(row.id)
+  detailVisible.value = true
+  detailMessage.value = ''
+  reloadDetail()
+}
+
+function reloadDetail() {
+  detailError.value = ''
+  if (detailId.value === null) {
+    return
+  }
+  try {
+    detailRow.value = getFlightEntry(detailId.value)
+  } catch (error) {
+    detailRow.value = null
+    detailError.value = error instanceof Error ? error.message : '航班保障详情读取失败'
+  }
+}
+
+function retryDetail() {
+  if (detailId.value === null) {
+    return
+  }
+  const result = retryFlightFetch(detailId.value)
+  // 重试结果一定说明原因：成功讲清从哪个待补节点继续，失败讲清为什么不能重试。
+  detailMessage.value = result.message
+  if (result.ok) {
+    reload()
+    reloadDetail()
+  }
+}
+
+function closeDetail() {
+  detailVisible.value = false
+  detailRow.value = null
+  detailId.value = null
+  detailError.value = ''
+  detailMessage.value = ''
 }
 
 onMounted(reload)
