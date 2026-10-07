@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmitOnError": false,
+    "outDir": "/tmp/migrate-build",
+    "baseUrl": "..",
+    "paths": { "@/*": ["src/*"] },
+    "lib": ["ES2020", "DOM"]
+  },
+  "include": ["migrate-check.ts", "../src/domain/**/*.ts", "../src/api/**/*.ts", "../src/data/**/*.ts"]
+}

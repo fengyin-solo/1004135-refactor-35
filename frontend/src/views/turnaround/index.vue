@@ -3,7 +3,7 @@
     <header class="page-head">
       <div>
         <h2>过站监控管理</h2>
-        <p class="page-desc">维护过站记录，围绕过站编号、关联航班、计划到港、实际到港做登记、筛选与状态流转。</p>
+        <p class="page-desc">过站清单与航班保障节点同源：关联航班的中断、待补节点会同步显示在「待补节点」列。</p>
       </div>
       <div class="page-actions">
         <button class="btn primary" type="button" @click="openCreate">登记过站记录</button>
@@ -33,7 +33,15 @@
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
     </form>
 
-    <table class="data-table">
+    <!-- 读取异常：列表入口给出原因与重试，不再静默留在旧数据 -->
+    <div v-if="loadError" class="state-banner error">
+      <span>{{ loadError }}</span>
+      <span class="banner-actions">
+        <button class="btn small" type="button" @click="reload">重试拉取</button>
+      </span>
+    </div>
+
+    <table v-else class="data-table">
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
@@ -43,7 +51,12 @@
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td v-for="column in columns" :key="column">
+            <template v-if="column === '待补节点'">
+              <span :class="pendingClass(row)">{{ pendingText(row) }}</span>
+            </template>
+            <template v-else>{{ row[column] ?? '—' }}</template>
+          </td>
           <td>{{ row.status }}</td>
           <td class="row-actions">
             <button
@@ -58,13 +71,13 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无过站监控数据，可先登记过站记录</td>
+          <td :colspan="columns.length + 2" class="empty-state">暂无符合条件的过站监控数据，可调整筛选条件或先登记过站记录</td>
         </tr>
       </tbody>
     </table>
 
     <footer class="page-foot">
-      <span>共 {{ total }} 条过站监控记录</span>
+      <span>共 {{ total }} 条过站监控记录（待补节点与航班保障详情实时同步）</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -79,25 +92,56 @@ import {
   moduleMeta,
   runAction as applyAction,
 } from '@/api/local-service'
+import { pendingNodeSummary } from '@/api/flight-service'
+import { normalizeFlightNo } from '@/domain/flight'
 import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('turnaround')
-const columns = ["过站编号", "关联航班", "计划到港", "实际到港", "过站时长", "保障进度", "异常事项", "过站状态"]
-const actions = ["开始监测", "正常完成", "标记超时"]
-const statuses = ["待监测", "监测中", "正常完成", "已超时"]
-const stats = [{"label": "监测中航班", "value": 0}, {"label": "正常完成航班", "value": 0}, {"label": "超时航班", "value": 0}]
+// 待补节点列紧跟保障进度，与航班保障详情用同一份节点判定。
+const columns = ['过站编号', '关联航班', '计划到港', '实际到港', '过站时长', '保障进度', '待补节点', '异常事项', '过站状态']
+const actions = ['开始监测', '正常完成', '标记超时']
+const statuses = ['待监测', '监测中', '正常完成', '已超时']
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const loadError = ref('')
+// 待补节点与航班保障同源：reload 时一次性同步，避免渲染期逐行重复拉取
+const pendingMap = ref<Map<string, string>>(new Map())
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const filterFields = ['过站编号', '关联航班', '计划到港']
+
+const stats = computed(() => [
+  { label: '监测中航班', value: rows.value.filter((row) => row.status === '监测中').length },
+  { label: '正常完成航班', value: rows.value.filter((row) => row.status === '正常完成').length },
+  { label: '超时航班', value: rows.value.filter((row) => row.status === '已超时').length },
+])
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
     count: rows.value.filter((row) => String(row.status) === status).length,
   })),
 )
+
+function pendingText(row: EntryRow): string {
+  // 同步航班保障侧的待补节点；空串表示关联不到对应航班，明确提示避免空白误导
+  const summary = pendingMap.value.get(normalizeFlightNo(row['关联航班'])) ?? ''
+  return summary || '未关联到航班保障节点'
+}
+
+function pendingClass(row: EntryRow): string {
+  const text = pendingText(row)
+  if (text.startsWith('中断')) {
+    return 'cell-danger'
+  }
+  if (text.startsWith('待补')) {
+    return 'cell-warning'
+  }
+  if (text === '节点齐') {
+    return 'cell-ok'
+  }
+  return 'cell-muted'
+}
 
 function resetFilters() {
   filters.value = {}
@@ -123,13 +167,25 @@ function runAction(action: string, row: EntryRow) {
 }
 
 function reload() {
+  loadError.value = ''
   errorMessage.value = ''
   try {
     const payload = listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
+    // 同步关联航班的待补节点（该调用会顺带完成旧航班的节点迁移）
+    const map = new Map<string, string>()
+    for (const row of payload.items) {
+      const key = normalizeFlightNo(row['关联航班'])
+      if (key && !map.has(key)) {
+        map.set(key, pendingNodeSummary(key))
+      }
+    }
+    pendingMap.value = map
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '过站监控列表读取失败'
+    rows.value = []
+    total.value = 0
+    loadError.value = error instanceof Error ? error.message : '过站监控列表读取失败，请点重试重新拉取'
   }
 }
 

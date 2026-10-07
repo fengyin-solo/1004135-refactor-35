@@ -15,6 +15,7 @@ const Pushback = () => import('@/views/pushback/index.vue')
 const CrewSchedule = () => import('@/views/crew_schedule/index.vue')
 const SpecialVehicle = () => import('@/views/special_vehicle/index.vue')
 const FlightOps = () => import('@/views/flight_ops/index.vue')
+const FlightOpsDetail = () => import('@/views/flight_ops/detail.vue')
 const Turnaround = () => import('@/views/turnaround/index.vue')
 const ApronSafety = () => import('@/views/apron_safety/index.vue')
 const LoadEquip = () => import('@/views/load_equip/index.vue')
@@ -38,6 +39,7 @@ const router = createRouter({
     { path: '/crew_schedule', name: 'crew_schedule', component: CrewSchedule },
     { path: '/special_vehicle', name: 'special_vehicle', component: SpecialVehicle },
     { path: '/flight_ops', name: 'flight_ops', component: FlightOps },
+    { path: '/flight_ops/:id', name: 'flight_ops_detail', component: FlightOpsDetail },
     { path: '/turnaround', name: 'turnaround', component: Turnaround },
     { path: '/apron_safety', name: 'apron_safety', component: ApronSafety },
     { path: '/load_equip', name: 'load_equip', component: LoadEquip },
